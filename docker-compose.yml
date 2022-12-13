@@ -1,0 +1,138 @@
+version: '3'
+services:
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.3.0
+    container_name: zookeeper
+    networks:
+      - zoo_network
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+
+  brokerkafka:
+    image: confluentinc/cp-kafka:7.3.0
+    container_name: brokerkafka
+    ports:
+      - "9092:9092"
+    depends_on:
+      - zookeeper
+    networks:
+      - kafka_network
+      - zoo_network
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: 'zookeeper:2181'
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_INTERNAL:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092,PLAINTEXT_INTERNAL://brokerkafka:29092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+  
+  postgresqldbpred:
+    container_name: postgresqldbpred
+    image: postgres
+    ports:
+      - "5432:5432"
+    networks:
+      - postgresql_network
+    environment:
+      - POSTGRES_USER=docker
+      - POSTGRES_PASSWORD=docker
+      - POSTGRES_DB=docker
+  
+  # Backend prediction
+  backendprediction:
+    build: ./src/backend_prediction
+    container_name: backendprediction
+    depends_on:
+      - brokerkafka
+    ports:
+      - "80:80"
+    networks:
+      - fe_be_network
+      - kafka_network
+    environment:
+      - SERVERS_K=brokerkafka:29092
+      - TOPIC_WINE=prediction_wine
+    volumes:
+      - ./model:/model
+    command: python -m main_backend_prediction
+
+  # Frontend prediction Streamlit
+  frontendprediction:
+    build: ./src/frontend_prediction
+    container_name: frontendprediction
+    depends_on:
+      - backendprediction
+    ports:
+      - "8501:8501"
+    networks:
+      - fe_be_network
+    environment:
+      - BACKEND=backendprediction:80
+    command: streamlit run main_frontend_prediction.py --server.port 8501
+
+  savedata:
+    build: ./src/save_data
+    container_name: save_data
+    depends_on:
+      - brokerkafka
+      - postgresqldbpred
+    networks:
+      - kafka_network
+      - postgresql_network
+    environment:
+      - SERVERS_K=brokerkafka:29092
+      - TOPIC_WINE=prediction_wine
+      - POSTGRES_USER=docker
+      - POSTGRES_PASSWORD=docker
+      - POSTGRES_DB=docker
+      - POSTGRES_URL=postgresqldbpred:5432
+    command: python -m main_save_data
+  
+  backenddatadrift:
+    build: ./src/backend_data_drift
+    container_name: backenddatadrift
+    depends_on:
+      - postgresqldbpred
+    networks:
+      - postgresql_network
+      - drift_network
+    environment:
+      - POSTGRES_USER=docker
+      - POSTGRES_PASSWORD=docker
+      - POSTGRES_DB=docker
+      - POSTGRES_URL=postgresqldbpred:5432
+    volumes:
+      - ./data:/data
+    command: python -m main_backend_drift
+  
+  frontenddatadrift:
+    build: ./src/frontend_data_drift
+    container_name: frontenddatadrift
+    depends_on:
+      - backenddatadrift
+    networks:
+      - drift_network
+    ports:
+      - "8502:8502"
+    environment:
+      - BACKEND=backenddatadrift:90
+    command: streamlit run main_frontend_drift.py --server.port 8502
+
+networks:
+  fe_be_network:
+    driver: bridge
+  
+  kafka_network:
+    driver: bridge
+  
+  zoo_network:
+    driver: bridge
+
+  postgresql_network:
+    driver: bridge
+  
+  drift_network:
+    driver: bridge
+

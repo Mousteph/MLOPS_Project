@@ -1,0 +1,8 @@
+eurybia
+sqlalchemy
+psycopg2
+pydantic
+pandas
+fastapi
+uvicorn
+apscheduler
